@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <title>Neon Hand Tracker - Expert Version</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+        #video-container { position: absolute; bottom: 10px; right: 10px; width: 200px; transform: scaleX(-1); border: 2px solid #00ff88; border-radius: 10px; }
+    </style>
+</head>
+<body>
+    <video id="webcam" autoplay playsinline style="display: none;"></video>
+    <video id="video-container" autoplay playsinline></video>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script>
+        const videoElement = document.getElementById('webcam');
+        const previewElement = document.getElementById('video-container');
+        
+        // إعداد مشهد Three.js لمحاكاة الفيديو
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // إنشاء جسيم النيون (Particle)
+        const geometry = new THREE.SphereGeometry(0.5, 32, 32);
+        const material = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
+        const neonPoint = new THREE.Mesh(geometry, material);
+        scene.add(neonPoint);
+        camera.position.z = 5;
+
+        // إعداد MediaPipe Hands
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        hands.onResults((results) => {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmark = results.multiHandLandmarks[0][8]; // رأس السبابة
+                
+                // تحويل الإحداثيات من الكاميرا إلى المشهد الثلاثي الأبعاد
+                const x = (landmark.x - 0.5) * -10; // عكس المحور X للمحاكاة
+                const y = (landmark.y - 0.5) * -6;
+                
+                neonPoint.position.set(x, y, 0);
+            }
+        });
+
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+                previewElement.srcObject = videoElement.srcObject;
+            },
+            width: 640,
+            height: 480
+        });
+        cameraUtils.start();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+        animate();
+    </script>
+</body>
+</html>
+
