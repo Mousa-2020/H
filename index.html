@@ -2,79 +2,164 @@
 <html lang="ar">
 <head>
     <meta charset="UTF-8">
-    <title>Neon Hand Tracker - Expert Version</title>
+    <title>Advanced Touchless System - EMA Smoothing</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
     <style>
-        body { margin: 0; overflow: hidden; background: #000; }
-        canvas { display: block; }
-        #video-container { position: absolute; bottom: 10px; right: 10px; width: 200px; transform: scaleX(-1); border: 2px solid #00ff88; border-radius: 10px; }
+        body { margin: 0; background: #0a0a0a; color: white; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow: hidden; }
+        
+        /* تصميم المؤشر المتطور */
+        #cursor {
+            position: absolute; width: 24px; height: 24px;
+            background: rgba(0, 255, 136, 0.2); border: 2px solid #00ff88;
+            border-radius: 50%; pointer-events: none; z-index: 10000;
+            transform: translate(-50%, -50%); /* لمركزة المؤشر بدقة */
+            transition: width 0.2s, height 0.2s, background 0.2s, border-color 0.2s;
+            box-shadow: 0 0 15px rgba(0, 255, 136, 0.5);
+        }
+
+        /* حالة التفاعل مع الأزرار */
+        #cursor.hovering { width: 40px; height: 40px; background: rgba(0, 200, 255, 0.3); border-color: #00c8ff; box-shadow: 0 0 20px rgba(0, 200, 255, 0.8); }
+        /* حالة النقر (القرص) */
+        #cursor.pinching { width: 15px; height: 15px; background: #ff0055; border-color: #ff0055; box-shadow: 0 0 20px rgba(255, 0, 85, 0.9); }
+
+        .container { display: flex; justify-content: center; align-items: center; height: 100vh; gap: 40px; }
+        
+        button { 
+            padding: 25px 50px; font-size: 22px; font-weight: bold; cursor: pointer; 
+            background: #111; color: #fff; border: 2px solid #333; border-radius: 15px; 
+            transition: all 0.3s ease; position: relative; overflow: hidden;
+        }
+        button:hover, button.simulated-hover { border-color: #00ff88; transform: translateY(-5px); box-shadow: 0 10px 20px rgba(0, 255, 136, 0.2); }
+        button:active, button.simulated-active { background: #00ff88; color: #000; transform: scale(0.95); }
+
+        #v-stream { position: absolute; bottom: 20px; right: 20px; width: 200px; transform: scaleX(-1); opacity: 0.3; border-radius: 10px; border: 1px solid #333; }
     </style>
 </head>
 <body>
-    <video id="webcam" autoplay playsinline style="display: none;"></video>
-    <video id="video-container" autoplay playsinline></video>
 
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <div id="cursor"></div>
+    
+    <div class="container">
+        <button onclick="console.log('Action 1 triggered'); alert('تم تنفيذ الأمر الأول عبر الإشارة!');">تفعيل النظام</button>
+        <button onclick="console.log('Action 2 triggered'); alert('تم تنفيذ الأمر الثاني بنجاح!');">إغلاق النظام</button>
+    </div>
+
+    <video id="v-stream" autoplay playsinline></video>
 
     <script>
-        const videoElement = document.getElementById('webcam');
-        const previewElement = document.getElementById('video-container');
+        const cursor = document.getElementById('cursor');
+        const videoElement = document.getElementById('v-stream');
         
-        // إعداد مشهد Three.js لمحاكاة الفيديو
-        const scene = new THREE.Scene();
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        document.body.appendChild(renderer.domElement);
+        // متغيرات خوارزمية التنعيم (EMA)
+        let smoothedX = window.innerWidth / 2;
+        let smoothedY = window.innerHeight / 2;
+        const alpha = 0.25; // معامل النعومة (قيمة أقل = نعومة أكبر وتأخر زمني بسيط)
 
-        // إنشاء جسيم النيون (Particle)
-        const geometry = new THREE.SphereGeometry(0.5, 32, 32);
-        const material = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
-        const neonPoint = new THREE.Mesh(geometry, material);
-        scene.add(neonPoint);
-        camera.position.z = 5;
+        // متغيرات آلة الحالة (State Machine)
+        let isPinching = false;
+        let lastClickTime = 0;
+        const CLICK_COOLDOWN = 500; // منع النقرات المتتالية (نصف ثانية)
+        let currentlyHoveredElement = null;
 
-        // إعداد MediaPipe Hands
-        const hands = new Hands({
-            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-        });
-
-        hands.setOptions({
-            maxNumHands: 1,
-            modelComplexity: 1,
-            minDetectionConfidence: 0.5,
-            minTrackingConfidence: 0.5
-        });
+        const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.8, minTrackingConfidence: 0.8 });
 
         hands.onResults((results) => {
             if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-                const landmark = results.multiHandLandmarks[0][8]; // رأس السبابة
+                const landmarks = results.multiHandLandmarks[0];
+                const indexTip = landmarks[8];
+                const thumbTip = landmarks[4];
+
+                // 1. تقييد مجال الرؤية (Active Zone Mapping)
+                // نعتبر أن 20% من الحواف غير قابلة للوصول بسهولة، فنركز على الـ 60% الوسطى
+                let rawX = (indexTip.x - 0.2) / 0.6; 
+                let rawY = (indexTip.y - 0.2) / 0.6;
                 
-                // تحويل الإحداثيات من الكاميرا إلى المشهد الثلاثي الأبعاد
-                const x = (landmark.x - 0.5) * -10; // عكس المحور X للمحاكاة
-                const y = (landmark.y - 0.5) * -6;
-                
-                neonPoint.position.set(x, y, 0);
+                // Clamping (التأكد من أن القيم لا تتجاوز 0 و 1)
+                rawX = Math.max(0, Math.min(1, rawX));
+                rawY = Math.max(0, Math.min(1, rawY));
+
+                // 2. تطبيق خوارزمية التنعيم (EMA) وعكس محور X
+                const targetX = (1 - rawX) * window.innerWidth;
+                const targetY = rawY * window.innerHeight;
+
+                smoothedX = (alpha * targetX) + ((1 - alpha) * smoothedX);
+                smoothedY = (alpha * targetY) + ((1 - alpha) * smoothedY);
+
+                cursor.style.left = smoothedX + 'px';
+                cursor.style.top = smoothedY + 'px';
+
+                // إخفاء مؤشر الماوس الافتراضي عند اكتشاف اليد
+                document.body.style.cursor = 'none';
+
+                // 3. تحليل التقاطع مع عناصر واجهة المستخدم (Raycasting logic)
+                // إخفاء المؤشر برمجياً لحظياً لمعرفة ما يوجد تحته
+                cursor.style.display = 'none';
+                const elementUnderCursor = document.elementFromPoint(smoothedX, smoothedY);
+                cursor.style.display = 'block';
+
+                // إدارة تأثيرات الـ Hover
+                if (elementUnderCursor && elementUnderCursor.tagName === 'BUTTON') {
+                    if (currentlyHoveredElement !== elementUnderCursor) {
+                        if (currentlyHoveredElement) currentlyHoveredElement.classList.remove('simulated-hover');
+                        currentlyHoveredElement = elementUnderCursor;
+                        currentlyHoveredElement.classList.add('simulated-hover');
+                        cursor.classList.add('hovering');
+                    }
+                } else {
+                    if (currentlyHoveredElement) {
+                        currentlyHoveredElement.classList.remove('simulated-hover');
+                        currentlyHoveredElement = null;
+                        cursor.classList.remove('hovering');
+                    }
+                }
+
+                // 4. خوارزمية كشف النقر (Pinch Detection)
+                // المسافة الإقليدية الثلاثية الأبعاد للتعويض عن عمق الكاميرا Z
+                const distance = Math.sqrt(
+                    Math.pow(indexTip.x - thumbTip.x, 2) + 
+                    Math.pow(indexTip.y - thumbTip.y, 2) +
+                    Math.pow(indexTip.z - thumbTip.z, 2)
+                );
+
+                const currentTime = Date.now();
+
+                if (distance < 0.04) { // قيمة حساسة ودقيقة
+                    if (!isPinching) {
+                        isPinching = true;
+                        cursor.classList.add('pinching');
+                        
+                        // تنفيذ النقر مع Cooldown لحماية النظام
+                        if (currentlyHoveredElement && (currentTime - lastClickTime > CLICK_COOLDOWN)) {
+                            currentlyHoveredElement.classList.add('simulated-active');
+                            
+                            // محاكاة الضغطة برمجياً بعد تأخير بسيط لإظهار الأنيميشن
+                            setTimeout(() => {
+                                currentlyHoveredElement.click();
+                                currentlyHoveredElement.classList.remove('simulated-active');
+                            }, 150);
+                            
+                            lastClickTime = currentTime;
+                        }
+                    }
+                } else {
+                    isPinching = false;
+                    cursor.classList.remove('pinching');
+                }
+            } else {
+                // في حال عدم اكتشاف يد، إرجاع مؤشر الماوس الافتراضي
+                document.body.style.cursor = 'default';
+                if(currentlyHoveredElement) {
+                    currentlyHoveredElement.classList.remove('simulated-hover');
+                    currentlyHoveredElement = null;
+                }
+                cursor.classList.remove('hovering', 'pinching');
             }
         });
 
-        const cameraUtils = new Camera(videoElement, {
-            onFrame: async () => {
-                await hands.send({image: videoElement});
-                previewElement.srcObject = videoElement.srcObject;
-            },
-            width: 640,
-            height: 480
-        });
-        cameraUtils.start();
-
-        function animate() {
-            requestAnimationFrame(animate);
-            renderer.render(scene, camera);
-        }
-        animate();
+        const camera = new Camera(videoElement, { onFrame: async () => { await hands.send({image: videoElement}); }, width: 640, height: 480 });
+        camera.start();
     </script>
 </body>
 </html>
-
